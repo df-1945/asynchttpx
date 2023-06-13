@@ -5,11 +5,12 @@ from bs4 import BeautifulSoup
 import asyncio
 from pydantic import BaseModel
 import time
+from enum import Enum
+import psutil
 
 app = FastAPI()
 
 origins = [
-    "http://localhost:3000",
     "https://kikisan.pages.dev",
     "https://kikisan.site",
     "https://www.kikisan.site",
@@ -24,24 +25,82 @@ app.add_middleware(
 )
 
 
+class Metode(str, Enum):
+    def __str__(self):
+        return str(self.value)
+
+    HTTPX = "ASYNCHTTPX"
+
+
 class DataRequest(BaseModel):
-    pages: int
     keyword: str
-    userAgent: str
+    pages: int
+    metode: Metode
 
 
-@app.post("/asynchttpx")
-def index(data: DataRequest):
+data_asynchttpx = []
+
+
+@app.post("/asynchttpx/{userAgent}")
+def input_asynchttpx(userAgent: str, input: DataRequest):
     try:
         base_url = "https://www.tokopedia.com/search"
-        headers = {"User-Agent": data.userAgent}
+        headers = {"User-Agent": userAgent}
+        process = psutil.Process()
+
+        # Dapatkan penggunaan CPU sebelum eksekusi
+        cpu_percent_before = process.cpu_percent(interval=None)
+
+        # Dapatkan penggunaan RAM sebelum eksekusi
+        memory_info_before = process.memory_info().rss
+
+        sent_bytes_start, received_bytes_start = get_network_usage()
+
         start_time = time.time()
-        loop = asyncio.run(main(base_url, headers, data.keyword, data.pages))
+        hasil = asyncio.run(main(base_url, headers, input.keyword, input.pages))
         end_time = time.time()
-        print(
-            f"Berhasil mengambil {len(loop)} produk dalam {end_time - start_time} detik."
+
+        sent_bytes_end, received_bytes_end = get_network_usage()
+
+        sent_bytes_total = sent_bytes_end - sent_bytes_start
+        received_bytes_total = received_bytes_end - received_bytes_start
+
+        # Dapatkan penggunaan CPU saat eksekusi
+        cpu_percent_during = process.cpu_percent(interval=None)
+
+        # Dapatkan penggunaan RAM saat eksekusi
+        memory_info_during = process.memory_info().rss
+
+        cpu_percent_total = (
+            max(cpu_percent_during, cpu_percent_before) - cpu_percent_before
         )
-        return loop
+        memory_info_total = (
+            max(memory_info_during, memory_info_before) - memory_info_before
+        )
+
+        print("Total Penggunaan Internet:")
+        print("Upload:", format_bytes(sent_bytes_total))
+        print("Download:", format_bytes(received_bytes_total))
+
+        print("Penggunaan CPU sebelum eksekusi: {} %".format(cpu_percent_total))
+        print("Penggunaan RAM sebelum eksekusi:", format_bytes(memory_info_total))
+
+        print(
+            f"Berhasil mengambil {len(hasil)} produk dalam {end_time - start_time} detik."
+        )
+        data = {
+            "upload": format_bytes(sent_bytes_total),
+            "download": format_bytes(received_bytes_total),
+            "cpu": f"{format(cpu_percent_total)}%",
+            "ram": format_bytes(memory_info_total),
+            "keyword": input.keyword,
+            "pages": input.pages,
+            "time": f"{end_time - start_time} detik",
+            "jumlah": len(hasil),
+            "hasil": hasil,
+        }
+        data_asynchttpx.append(data)
+        return data_asynchttpx
     except Exception as e:
         return e
 
@@ -315,3 +374,21 @@ async def data_shop(shop_link, session, headers):
             f"Gagal melakukan koneksi ke halaman {shop_link} setelah mencoba beberapa kali."
         )
         return None
+
+
+def get_network_usage():
+    network_stats = psutil.net_io_counters()
+    sent_bytes = network_stats.bytes_sent
+    received_bytes = network_stats.bytes_recv
+
+    return sent_bytes, received_bytes
+
+
+def format_bytes(bytes):
+    # Fungsi ini mengubah ukuran byte menjadi format yang lebih mudah dibaca
+    sizes = ["B", "KB", "MB", "GB", "TB"]
+    i = 0
+    while bytes >= 1024 and i < len(sizes) - 1:
+        bytes /= 1024
+        i += 1
+    return "{:.2f} {}".format(bytes, sizes[i])
